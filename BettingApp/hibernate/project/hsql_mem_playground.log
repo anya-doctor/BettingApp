@@ -1,0 +1,9 @@
+/*C4*/SET SCHEMA PUBLIC
+\u000a    drop table USERS if exists
+create sequence hibernate_sequence start with 1 increment by 1
+\u000a    create table USERS (\u000a        id integer not null,\u000a        primary key (id)\u000a    )
+CREATE procedure inoutproc (IN arg1 int, OUT res int) BEGIN ATOMIC set res = arg1 + 1;END
+DROP procedure inoutproc
+\u000a    drop table USERS if exists
+\u000a    drop sequence hibernate_sequence
+DISCONNECT

@@ -1,0 +1,155 @@
+/*
+ * Hibernate, Relational Persistence for Idiomatic Java
+ *
+ * License: GNU Lesser General Public License (LGPL), version 2.1 or later.
+ * See the lgpl.txt file in the root directory or <http://www.gnu.org/licenses/lgpl-2.1.html>.
+ */
+apply plugin: 'java'
+apply plugin: 'maven-publish'
+apply plugin: 'maven-publish-auth'
+apply plugin: 'build-dashboard'
+apply plugin: 'project-report'
+apply plugin: org.hibernate.build.HibernateBuildPlugin
+apply plugin: 'idea'
+
+buildDir = "target"
+
+ext {
+    // Exact ORM version, e.g. "5.1.1.Final"
+    slot = rootProject.hibernateTargetVersion
+
+    // Just the minor ORM version, e.g. "5.1"; Is used as an alias for the exact version
+    minorSlot = slot.substring( 0, slot.indexOf( ".", slot.indexOf( "." ) + 1) )
+    majorWildflyVersion = wildflyVersion.substring( 0, wildflyVersion.indexOf( "." ) )
+    artifactClassifier = "wildfly-${majorWildflyVersion}-dist"
+
+    modulesXmlDir = "$buildDir/tmp/modules"
+
+}
+
+configurations {
+    jipijapa {
+        transitive = false
+    }
+
+    wildflyDist
+}
+
+dependencies {
+    jipijapa "org.wildfly:jipijapa-hibernate5:${wildflyVersion}"
+    wildflyDist "org.wildfly:wildfly-dist:${wildflyVersion}@zip"
+
+    testCompile project( ":hibernate-core" )
+    testCompile libraries.junit
+    testCompile libraries.arquillian_junit_container
+    testCompile libraries.arquillian_protocol_servlet
+    testCompile libraries.shrinkwrap_descriptors_api_javaee
+    testCompile libraries.shrinkwrap_descriptors_impl_javaee
+    testCompile libraries.wildfly_arquillian_container_managed
+}
+
+task copyModulesXml(type: Copy) {
+    // NOTE : we do a separate Copy task for the modules XML files to apply token-replacements
+
+    into modulesXmlDir
+    expand( slot: slot, minorSlot: minorSlot, version: rootProject.hibernateTargetVersion, wildflyVersion: wildflyVersion )
+
+    into( 'org/hibernate/' + slot ) {
+        from 'src/main/modules/org/hibernate/core'
+    }
+
+    into( 'org/hibernate/infinispan/' + slot ) {
+        from 'src/main/modules/org/hibernate/infinispan'
+    }
+
+    into( 'org/hibernate/jipijapa-hibernate5/' + slot ) {
+        from 'src/main/modules/org/hibernate/jipijapa-hibernate5'
+    }
+
+    // create alias for the short name
+    into( 'org/hibernate/' + minorSlot ) {
+        from 'src/main/aliases/org/hibernate/core'
+    }
+
+    into( 'org/hibernate/infinispan/' + minorSlot ) {
+        from 'src/main/aliases/org/hibernate/infinispan'
+    }
+
+    into( 'org/hibernate/jipijapa-hibernate5/' + minorSlot ) {
+        from 'src/main/aliases/org/hibernate/jipijapa-hibernate5'
+    }
+}
+
+task createModulesZip(type: Zip, dependsOn: [copyModulesXml]) {
+    baseName = 'hibernate-orm-modules'
+    classifier = artifactClassifier
+
+    from modulesXmlDir
+
+    into( 'org/hibernate/' + slot ) {
+        from parent.project( 'hibernate-core' ).configurations.archives.allArtifacts.files
+        from parent.project( 'hibernate-envers' ).configurations.archives.allArtifacts.files
+    }
+
+    into( 'org/hibernate/infinispan/' + slot ) {
+        from parent.project( 'hibernate-infinispan' ).configurations.archives.allArtifacts.files.filter{ file -> !file.name.endsWith('-sources.jar') && !file.name.endsWith('-tests.jar') }
+    }
+
+    into( 'org/hibernate/jipijapa-hibernate5/' + slot ) {
+        from configurations.jipijapa
+    }
+}
+
+mavenPom {
+    name = "Hibernate ORM modules for WildFly ${majorWildflyVersion}"
+    description = "Hibernate ORM modules for WildFly ${majorWildflyVersion}"
+}
+
+publishing {
+    publications {
+        mavenZip( MavenPublication ) {
+            artifact( createModulesZip ) {
+                classifier artifactClassifier
+            }
+        }
+    }
+}
+
+build.dependsOn createModulesZip
+
+
+/*************************/
+/*        Testing        */
+/*************************/
+
+if ( JavaVersion.current().isJava9Compatible() ) {
+    logger.lifecycle( "WARNING - Skipping hibernate-orm-modules tests for Java 9" )
+    // WildFly has problems booting in Java 9
+    test.enabled = false
+}
+
+test {
+    systemProperties['jboss.socket.binding.port-offset'] = 137
+}
+
+// Unzip Wildfly Dist
+task extractWildFly(type: Copy) {
+    from {
+        configurations.wildflyDist.collect { zipTree(it) }
+    }
+    into "$buildDir/"
+}
+
+// Unzip Hibernate ORM Modules ZIP into the server's "modules" dir
+task extractModules(dependsOn: [extractWildFly, createModulesZip], type: Copy) {
+    duplicatesStrategy DuplicatesStrategy.EXCLUDE
+    from zipTree( createModulesZip.archivePath )
+    into "$buildDir/wildfly-${wildflyVersion}/modules"
+}
+
+test.dependsOn extractModules
+
+processTestResources {
+    expand( buildDir: buildDir.getName(), wildflyVersion: wildflyVersion )
+}
+
